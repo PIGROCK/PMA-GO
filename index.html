@@ -1,0 +1,291 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+    <title>GPS RPG Adventure</title>
+    
+    <!-- Leaflet CSS & JS -->
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+
+    <style>
+        body { margin: 0; padding: 0; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; overflow: hidden; }
+        #map { width: 100vw; height: 100vh; z-index: 1; }
+        
+        /* UI ของผู้เล่น */
+        #player-ui {
+            position: absolute; top: 10px; left: 10px; right: 10px;
+            background: rgba(255, 255, 255, 0.95);
+            padding: 15px; border-radius: 12px;
+            box-shadow: 0 4px 10px rgba(0,0,0,0.3);
+            z-index: 1000; display: flex; justify-content: space-between;
+            align-items: center; border: 2px solid #3498db;
+        }
+        .stats { font-size: 14px; font-weight: bold; color: #333; }
+        .bar-container { width: 100px; height: 10px; background: #ddd; border-radius: 5px; margin-top: 5px; overflow: hidden; }
+        .hp-bar { height: 100%; background: #e74c3c; width: 100%; transition: width 0.3s; }
+        .xp-bar { height: 100%; background: #2ecc71; width: 0%; transition: width 0.3s; }
+
+        /* หน้าจอต่อสู้ (Battle Screen) */
+        #battle-screen {
+            position: absolute; top: 0; left: 0; width: 100vw; height: 100vh;
+            background: rgba(0, 0, 0, 0.85); z-index: 2000;
+            display: none; flex-direction: column; justify-content: center; align-items: center;
+            color: white; text-align: center;
+        }
+        .battle-box { background: #2c3e50; padding: 20px; border-radius: 15px; width: 80%; max-width: 350px; border: 3px solid #f1c40f; }
+        .btn {
+            background: #e74c3c; color: white; border: none; padding: 12px 20px;
+            font-size: 16px; border-radius: 8px; cursor: pointer; margin-top: 15px; font-weight: bold; width: 100%;
+        }
+        .btn-run { background: #95a5a6; }
+        .btn:active { transform: scale(0.95); }
+
+        /* Effect การโจมตี / Check-in */
+        #effect-overlay {
+            position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%);
+            font-size: 50px; z-index: 3000; display: none; pointer-events: none;
+            animation: popUp 1s ease-out forwards;
+        }
+        @keyframes popUp { 0% { opacity: 1; transform: translate(-50%, -50%) scale(0.5); } 100% { opacity: 0; transform: translate(-50%, -150%) scale(1.5); } }
+    </style>
+</head>
+<body>
+
+    <!-- แผงข้อมูลผู้เล่นด้านบน -->
+    <div id="player-ui">
+        <div>
+            <div class="stats" id="player-level">LV. 1 ผู้กล้าฝึกหัด</div>
+            <div style="font-size: 12px; margin-top: 5px;">HP: <span id="hp-text">20/20</span></div>
+            <div class="bar-container"><div class="hp-bar" id="hp-bar"></div></div>
+        </div>
+        <div>
+            <div style="font-size: 12px; text-align: right;">EXP: <span id="xp-text">0/10</span></div>
+            <div class="bar-container"><div class="xp-bar" id="xp-bar"></div></div>
+        </div>
+    </div>
+
+    <!-- หน้าจอต่อสู้ -->
+    <div id="battle-screen">
+        <div class="battle-box">
+            <h2 id="enemy-name">สไลม์ป่า (Lv.1)</h2>
+            <p>HP ศัตรู: <span id="enemy-hp">10</span></p>
+            <hr>
+            <p id="battle-log">มอนสเตอร์ปรากฏตัว!</p>
+            <button class="btn" onclick="attackEnemy()">⚔️ โจมตี!</button>
+            <button class="btn btn-run" onclick="fleeBattle()">🏃 หนี</button>
+        </div>
+    </div>
+
+    <!-- เอฟเฟกต์ลอยขึ้นมา -->
+    <div id="effect-overlay">💥</div>
+
+    <!-- แผนที่ -->
+    <div id="map"></div>
+
+    <script>
+        // --- ระบบข้อมูลผู้เล่น ---
+        let player = {
+            level: 1,
+            hp: 20, maxHp: 20,
+            xp: 0, maxXp: 10,
+            atk: 5
+        };
+
+        let myLoc = null; // เก็บพิกัดปัจจุบันของผู้เล่น L.latLng
+        let isSpawned = false; // ตรวจสอบว่าเสกของรอบตัวหรือยัง
+
+        // อัปเดต UI ผู้เล่น
+        function updatePlayerUI() {
+            document.getElementById('player-level').innerText = `LV. ${player.level} ผู้กล้า`;
+            document.getElementById('hp-text').innerText = `${player.hp}/${player.maxHp}`;
+            document.getElementById('xp-text').innerText = `${player.xp}/${player.maxXp}`;
+            document.getElementById('hp-bar').style.width = `${(player.hp / player.maxHp) * 100}%`;
+            document.getElementById('xp-bar').style.width = `${(player.xp / player.maxXp) * 100}%`;
+        }
+        updatePlayerUI();
+
+        // เล่นเอฟเฟกต์
+        function showEffect(emoji) {
+            const fx = document.getElementById('effect-overlay');
+            fx.innerText = emoji;
+            fx.style.display = 'block';
+            fx.style.animation = 'none';
+            setTimeout(() => fx.style.animation = 'popUp 1s ease-out forwards', 10);
+            setTimeout(() => fx.style.display = 'none', 1000);
+        }
+
+        // --- ระบบแผนที่ ---
+        const map = L.map('map', { zoomControl: false }).setView([13.7563, 100.5018], 16);
+        L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom: 19 }).addTo(map);
+
+        // สร้างไอคอนสีต่างๆ แบบง่ายๆ โดยใช้ Default Marker เปลี่ยนสีผ่าน CSS Hue Rotate (สำหรับทดสอบ)
+        const blueIcon = L.icon({ iconUrl: 'https://unpkg.com/leaflet@1.9.4/dist/images/marker-icon.png', shadowUrl: 'https://unpkg.com/leaflet@1.9.4/dist/images/marker-shadow.png', iconAnchor: [12, 41] });
+        let playerMarker = null;
+
+        // --- ระบบ GPS ---
+        if ('geolocation' in navigator) {
+            navigator.geolocation.watchPosition(
+                (pos) => {
+                    const lat = pos.coords.latitude;
+                    const lng = pos.coords.longitude;
+                    myLoc = L.latLng(lat, lng);
+
+                    if (!playerMarker) {
+                        playerMarker = L.marker([lat, lng], { icon: blueIcon }).addTo(map).bindPopup("ตัวคุณ");
+                        map.setView([lat, lng], 17);
+                    } else {
+                        playerMarker.setLatLng([lat, lng]);
+                    }
+
+                    // เมื่อได้พิกัดครั้งแรก ให้สุ่มสร้างจุด Check-in และ มอนสเตอร์รอบๆ ตัว
+                    if (!isSpawned) {
+                        spawnEntities(lat, lng);
+                        isSpawned = true;
+                    }
+                },
+                (err) => alert("กรุณาเปิด GPS และอนุญาตให้เข้าถึงตำแหน่งเพื่อเล่นเกม!"),
+                { enableHighAccuracy: true }
+            );
+        } else {
+            alert("อุปกรณ์ไม่รองรับ GPS");
+        }
+
+        // --- ระบบสุ่มสร้างออบเจกต์รอบตัว ---
+        function spawnEntities(centerLat, centerLng) {
+            // สุ่มจุด Check-in 5 จุด
+            for (let i = 0; i < 5; i++) {
+                let lat = centerLat + (Math.random() - 0.5) * 0.004; // รัศมีราวๆ 200m
+                let lng = centerLng + (Math.random() - 0.5) * 0.004;
+                createCheckin(lat, lng);
+            }
+            // สุ่มมอนสเตอร์ 5 ตัว
+            for (let i = 0; i < 5; i++) {
+                let lat = centerLat + (Math.random() - 0.5) * 0.004;
+                let lng = centerLng + (Math.random() - 0.5) * 0.004;
+                createMonster(lat, lng, player.level);
+            }
+        }
+
+        // --- ระบบ Check-in ---
+        function createCheckin(lat, lng) {
+            // ใช้ไอคอนสีเขียวจำลอง
+            const checkinMarker = L.marker([lat, lng]).addTo(map);
+            checkinMarker._icon.style.filter = "hue-rotate(120deg)"; // เปลี่ยนสีเป็นเขียว
+            
+            checkinMarker.on('click', () => {
+                if (!myLoc) return;
+                const dist = myLoc.distanceTo(L.latLng(lat, lng));
+                if (dist > 40) {
+                    alert(`อยู่ไกลเกินไป! เดินเข้าไปอีก ${Math.floor(dist - 40)} เมตร`);
+                } else {
+                    // Effect เมื่อ Check-in สำเร็จ
+                    showEffect("✨");
+                    player.hp = Math.min(player.maxHp, player.hp + 10); // ฟื้น HP
+                    player.xp += 2; // ได้ XP นิดหน่อย
+                    alert("📍 เช็คอินสำเร็จ! ฟื้นฟู HP 10 หน่วย และได้รับ 2 EXP");
+                    checkLevelUp();
+                    map.removeLayer(checkinMarker); // ลบเสาออก
+                }
+            });
+        }
+
+        // --- ระบบต่อสู้ ---
+        let currentEnemy = null;
+        let activeMonsterMarker = null;
+
+        function createMonster(lat, lng, level) {
+            const monsterMarker = L.marker([lat, lng]).addTo(map);
+            monsterMarker._icon.style.filter = "hue-rotate(160deg)"; // เปลี่ยนสีเป็นแดง
+
+            monsterMarker.on('click', () => {
+                if (!myLoc) return;
+                const dist = myLoc.distanceTo(L.latLng(lat, lng));
+                if (dist > 40) {
+                    alert(`มอนสเตอร์อยู่ไกล! เดินเข้าไปอีก ${Math.floor(dist - 40)} เมตร`);
+                } else {
+                    startBattle(level, monsterMarker);
+                }
+            });
+        }
+
+        function startBattle(level, marker) {
+            if (player.hp <= 0) {
+                alert("คุณไม่มี HP เหลือพอที่จะสู้ ไปหาจุด Check-in เพื่อฟื้นฟูก่อน!");
+                return;
+            }
+            activeMonsterMarker = marker;
+            currentEnemy = {
+                name: `ออร์คดุร้าย (Lv.${level})`,
+                hp: 10 + (level * 5),
+                atk: 2 + level,
+                xpReward: 5 + (level * 2)
+            };
+            
+            document.getElementById('enemy-name').innerText = currentEnemy.name;
+            document.getElementById('enemy-hp').innerText = currentEnemy.hp;
+            document.getElementById('battle-log').innerText = "มอนสเตอร์ปรากฏตัว!";
+            document.getElementById('battle-screen').style.display = 'flex';
+        }
+
+        function attackEnemy() {
+            // ผู้เล่นตี
+            showEffect("⚔️");
+            let dmg = player.atk + Math.floor(Math.random() * 3);
+            currentEnemy.hp -= dmg;
+            
+            if (currentEnemy.hp <= 0) {
+                // ชนะ
+                document.getElementById('enemy-hp').innerText = "0";
+                document.getElementById('battle-log').innerText = `คุณชนะ! ได้รับ ${currentEnemy.xpReward} EXP`;
+                player.xp += currentEnemy.xpReward;
+                checkLevelUp();
+                
+                setTimeout(() => {
+                    document.getElementById('battle-screen').style.display = 'none';
+                    map.removeLayer(activeMonsterMarker); // ลบมอนสเตอร์ที่ตาย
+                    // สุ่มเกิดใหม่ 1 ตัวที่อื่น
+                    createMonster(myLoc.lat + (Math.random() - 0.5)*0.004, myLoc.lng + (Math.random() - 0.5)*0.004, player.level);
+                }, 1500);
+            } else {
+                // มอนสเตอร์สวนกลับ
+                document.getElementById('enemy-hp').innerText = currentEnemy.hp;
+                let enemyDmg = currentEnemy.atk + Math.floor(Math.random() * 2);
+                player.hp -= enemyDmg;
+                document.getElementById('battle-log').innerText = `คุณตีเข้า ${dmg} ดาเมจ! โดนสวนกลับ ${enemyDmg} ดาเมจ!`;
+                
+                if (player.hp <= 0) {
+                    player.hp = 0;
+                    updatePlayerUI();
+                    document.getElementById('battle-log').innerText = "คุณพ่ายแพ้...";
+                    setTimeout(() => {
+                        alert("คุณหมดสภาพ! กลับไปหาจุด Check-in เพื่อรักษาตัว");
+                        fleeBattle();
+                    }, 1500);
+                }
+            }
+            updatePlayerUI();
+        }
+
+        function fleeBattle() {
+            document.getElementById('battle-screen').style.display = 'none';
+            currentEnemy = null;
+        }
+
+        function checkLevelUp() {
+            if (player.xp >= player.maxXp) {
+                player.level++;
+                player.xp = player.xp - player.maxXp;
+                player.maxXp = Math.floor(player.maxXp * 1.5); // ใช้ XP เยอะขึ้น
+                player.maxHp += 5;
+                player.hp = player.maxHp; // ฮีลเต็มเมื่อเลเวลอัป
+                player.atk += 2;
+                showEffect("🌟");
+                alert(`🎉 เลเวลอัปเป็น LV.${player.level}! พลังโจมตีและ HP เพิ่มขึ้น!`);
+            }
+            updatePlayerUI();
+        }
+    </script>
+</body>
+</html>
